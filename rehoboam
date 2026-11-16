@@ -1,0 +1,93 @@
+pip install -q numpy pillow && npm install -g @zeppos/zeus-cli && cat << 'EOF' > build.py
+import os, json, numpy as np
+from PIL import Image, ImageFilter
+
+PROJECT_DIR = "wf_src"
+ASSETS_DIR = os.path.join(PROJECT_DIR, "assets", "trex3_44")
+WF_DIR = os.path.join(PROJECT_DIR, "watchface")
+os.makedirs(ASSETS_DIR, exist_ok=True)
+os.makedirs(WF_DIR, exist_ok=True)
+
+SIZE, FRAMES, RADIUS, BASE_THICKNESS = 466, 30, 138, 5
+y, x = np.ogrid[:SIZE, :SIZE]
+cx, cy = SIZE // 2, SIZE // 2
+dist = np.sqrt((x - cx)**2 + (y - cy)**2)
+angle = np.arctan2(y - cy, x - cx)
+
+def generate_wave(theta, t_phase):
+    w1 = np.sin(3 * theta + t_phase) * 3.8
+    w2 = np.cos(7 * theta - 2 * t_phase) * 2.4
+    w3 = np.sin(13 * theta + 3 * t_phase) * 1.4
+    spike_mask = np.exp(-((theta + 2.35) % (2 * np.pi) - np.pi)**2 / 0.32)
+    spike = spike_mask * (14.0 + 7.0 * np.sin(t_phase)) * np.abs(np.sin(9 * theta - t_phase))
+    return w1 + w2 + w3 + spike
+
+for f in range(FRAMES):
+    t_phase = 2 * np.pi * f / FRAMES
+    img_arr = np.full((SIZE, SIZE), 235, dtype=np.float32)
+    wave = generate_wave(angle, t_phase)
+    outer_diff = dist - (RADIUS + wave)
+    glow = np.where((outer_diff > 0) & (outer_diff < 30), np.exp(-outer_diff / (7.5 + wave * 0.45)) * 185, 0)
+    ring_mask = np.abs(dist - RADIUS) < (BASE_THICKNESS / 2.0)
+    img_arr = np.clip(img_arr - glow, 0, 255)
+    img_arr[ring_mask] = 12
+    img = Image.fromarray(img_arr.astype(np.uint8), mode='L').convert('RGB').filter(ImageFilter.GaussianBlur(radius=0.7))
+    img.save(os.path.join(ASSETS_DIR, f"anim_{f}.png"))
+
+Image.open(os.path.join(ASSETS_DIR, "anim_0.png")).save(os.path.join(ASSETS_DIR, "icon.png"))
+
+app_json = {
+    "configVersion": "v3",
+    "app": {
+        "appId": 1094821,
+        "appName": "Rehoboam Divergence",
+        "appType": "watchface",
+        "version": {"code": 1, "name": "1.0.0"},
+        "icon": "icon.png",
+        "vender": "Custom",
+        "description": "Westworld Rehoboam animated watchface"
+    },
+    "permissions": ["data:os.device.info", "data:user.hd.heart_rate", "data:user.hd.step"],
+    "runtime": {"apiVersion": {"compatible": "3.0.0", "target": "3.0.0", "minVersion": "3.0.0"}},
+    "targets": {
+        "trex3_44": {
+            "module": {"watchface": {"path": "watchface/index", "main": 1, "editable": 0, "lockscreen": 0}},
+            "platforms": [{"st": "r", "dw": 466, "dh": 466}],
+            "designWidth": 466
+        }
+    }
+}
+with open(os.path.join(PROJECT_DIR, "app.json"), "w") as f:
+    json.dump(app_json, f, indent=2)
+
+index_js = """import { createWidget, widget, align, prop } from '@zos/ui'
+import { Time, HeartRate, Step, Battery } from '@zos/sensor'
+
+WatchFace({
+  build() {
+    createWidget(widget.IMG_ANIM, {
+      x: 0, y: 0, anim_path: '', anim_prefix: 'anim', anim_ext: 'png',
+      anim_fps: 15, anim_size: 30, repeat_count: 0, anim_status: 1
+    })
+    const timeSensor = new Time(), hrSensor = new HeartRate(), stepSensor = new Step(), batSensor = new Battery()
+    const dateWidget = createWidget(widget.TEXT, { x: 133, y: 152, w: 200, h: 28, color: 0x333333, text_size: 20, align_h: align.CENTER_H, align_v: align.CENTER_V, text: '' })
+    const timeWidget = createWidget(widget.TEXT, { x: 113, y: 185, w: 240, h: 76, color: 0x0A0A0A, text_size: 68, align_h: align.CENTER_H, align_v: align.CENTER_V, text: '00:00' })
+    const statsWidget = createWidget(widget.TEXT, { x: 118, y: 268, w: 230, h: 28, color: 0x222222, text_size: 19, align_h: align.CENTER_H, align_v: align.CENTER_V, text: '' })
+    const stepWidget = createWidget(widget.TEXT, { x: 133, y: 298, w: 200, h: 24, color: 0x444444, text_size: 17, align_h: align.CENTER_H, align_v: align.CENTER_V, text: '' })
+    const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']
+    const update = () => {
+      timeWidget.setProperty(prop.TEXT, `${String(timeSensor.getHours()).padStart(2, '0')}:${String(timeSensor.getMinutes()).padStart(2, '0')}`)
+      dateWidget.setProperty(prop.TEXT, `${days[timeSensor.getDay() % 7]}  ${String(timeSensor.getDate()).padStart(2, '0')}.${String(timeSensor.getMonth()).padStart(2, '0')}`)
+      statsWidget.setProperty(prop.TEXT, `HR ${hrSensor.getCurrent() || hrSensor.getLast() || '--'}   •   ${batSensor.getCurrent()}%`)
+      stepWidget.setProperty(prop.TEXT, `${stepSensor.getCurrent()} STEPS`)
+    }
+    update()
+    timeSensor.onPerMinute(update)
+    hrSensor.onCurrentChange(update)
+  }
+})
+"""
+with open(os.path.join(WF_DIR, "index.js"), "w") as f:
+    f.write(index_js)
+EOF
+python3 build.py && cd wf_src && zeus build && cp dist/*.zab ../Rehoboam_TRex3_44mm.zab && cd .. && rm -rf wf_src build.py && git add Rehoboam_TRex3_44mm.zab && git commit -m "Build Rehoboam watchface" && git push
